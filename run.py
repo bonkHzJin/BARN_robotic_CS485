@@ -1,57 +1,62 @@
-from math import atan2, pi
 import time
 import argparse
 import subprocess
 import os
 from os.path import join
-
+from math import radians, copysign, sqrt, pow, pi, atan2
 import numpy as np
 import rospy
 import rospkg
+from tf.transformations import euler_from_quaternion
+import tf
+from geometry_msgs.msg import Twist, Point, Quaternion
 
 from gazebo_simulation import GazeboSimulation
 
 INIT_POSITION = [-2, 3, 1.57]  # in world frame
 GOAL_POSITION = [0, 10]  # relative to the initial position
 
+
 def compute_distance(p1, p2):
     return ((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2) ** 0.5
 
+
 def path_coord_to_gazebo_coord(x, y):
-        RADIUS = 0.075
-        r_shift = -RADIUS - (30 * RADIUS * 2)
-        c_shift = RADIUS + 5
+    RADIUS = 0.075
+    r_shift = -RADIUS - (30 * RADIUS * 2)
+    c_shift = RADIUS + 5
 
-        gazebo_x = x * (RADIUS * 2) + r_shift
-        gazebo_y = y * (RADIUS * 2) + c_shift
+    gazebo_x = x * (RADIUS * 2) + r_shift
+    gazebo_y = y * (RADIUS * 2) + c_shift
 
-        return (gazebo_x, gazebo_y)
-
+    return (gazebo_x, gazebo_y)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description = 'test BARN navigation challenge')
+    parser = argparse.ArgumentParser(
+        description='test BARN navigation challenge')
     parser.add_argument('--world_idx', type=int, default=0)
     parser.add_argument('--gui', action="store_true")
     parser.add_argument('--out', type=str, default="out.txt")
     args = parser.parse_args()
-    
+
     ##########################################################################################
-    ## 0. Launch Gazebo Simulation
+    # 0. Launch Gazebo Simulation
     ##########################################################################################
-    
+
     os.environ["JACKAL_LASER"] = "1"
     os.environ["JACKAL_LASER_MODEL"] = "ust10"
     os.environ["JACKAL_LASER_OFFSET"] = "-0.065 0 0.01"
-    
-    world_name = "BARN/world_%d.world" %(args.world_idx)
-    print(">>>>>>>>>>>>>>>>>> Loading Gazebo Simulation with %s <<<<<<<<<<<<<<<<<<" %(world_name))   
+
+    world_name = "BARN/world_%d.world" % (args.world_idx)
+    print(">>>>>>>>>>>>>>>>>> Loading Gazebo Simulation with %s <<<<<<<<<<<<<<<<<<" % (
+        world_name))
     rospack = rospkg.RosPack()
     base_path = rospack.get_path('jackal_helper')
-    
+
     launch_file = join(base_path, 'launch', 'gazebo_launch.launch')
     world_name = join(base_path, "worlds", world_name)
-    
+
     gazebo_process = subprocess.Popen([
         'roslaunch',
         launch_file,
@@ -59,158 +64,178 @@ if __name__ == "__main__":
         'gui:=' + ("true" if args.gui else "false")
     ])
     time.sleep(5)  # sleep to wait until the gazebo being created
-    
-    rospy.init_node('gym', anonymous=True) #, log_level=rospy.FATAL)
+
+    rospy.init_node('gym', anonymous=True)  # , log_level=rospy.FATAL)
     rospy.set_param('/use_sim_time', True)
-    
-    # GazeboSimulation provides useful interface to communicate with gazebo  
+
+    # GazeboSimulation provides useful interface to communicate with gazebo
     gazebo_sim = GazeboSimulation(init_position=INIT_POSITION)
-    
+
     init_coor = (INIT_POSITION[0], INIT_POSITION[1])
-    goal_coor = (INIT_POSITION[0] + GOAL_POSITION[0], INIT_POSITION[1] + GOAL_POSITION[1])
-    
+    goal_coor = (INIT_POSITION[0] + GOAL_POSITION[0],
+                 INIT_POSITION[1] + GOAL_POSITION[1])
+
     pos = gazebo_sim.get_model_state().pose.position
     curr_coor = (pos.x, pos.y)
     collided = True
-    
+
     # check whether the robot is reset, the collision is False
     while compute_distance(init_coor, curr_coor) > 0.1 or collided:
-        gazebo_sim.reset() # Reset to the initial position
+        gazebo_sim.reset()  # Reset to the initial position
         pos = gazebo_sim.get_model_state().pose.position
         curr_coor = (pos.x, pos.y)
         collided = gazebo_sim.get_hard_collision()
         time.sleep(1)
 
-
-
-
     ##########################################################################################
-    ## 1. Launch your navigation stack
-    ## (Customize this block to add your own navigation stack)
+    # 1. Launch your navigation stack
+    # (Customize this block to add your own navigation stack)
     ##########################################################################################
-    
-    launch_file = join(base_path, '..', 'jackal_helper/launch/move_base_DWA.launch')
+
+    launch_file = join(
+        base_path, '..', 'jackal_helper/launch/move_base_DWA.launch')
     nav_stack_process = subprocess.Popen([
         'roslaunch',
         launch_file,
     ])
-    
-    # Make sure your compute_distance(init_coor, curr_coor)navigation stack recives a goal of (0, 10, 0), which is 10 meters away
+
+    # Make sure your navigation stack recives a goal of (0, 10, 0), which is 10 meters away
     # along postive y-axis.
     import actionlib
     from geometry_msgs.msg import Quaternion
     from move_base_msgs.msg import MoveBaseGoal, MoveBaseAction
-
-#   STARTS: 
-#   INIT_POSITION = [-2, 3, 1.57]  # in world frame
-#   GOAL_POSITION = [0, 10]  # relative to the initial position
-
-    # obtain current position
-    pos = gazebo_sim.get_model_state().pose.position
-
-    # --- varibales start
-    error = compute_distance(pos, goal_coor) # error at the time
-    Kp = 1.0    # proportional
-    Ki = 0.5    # integral
-    Kd = 0.25   # derivative
-    tau = 0.02
-    
-    # --- time need to modified, else should be 0 to begin with.
-    T = 0.1     # time
-    previous_error = 0
-    integrator = 0.0
-    prevError  = 0.0
-    differentiator  = 0.0
-    prevMeasurement = 0.0
-    measurement = 0.0
-    
-    # --- setting limit
-    limMaxInt = 5
-    limMinInt = -5
-    limMax = 10
-    limMin = -10
-    out = 0.0
-    # --- variables end
-    
-    # calculation starts
-    proportional = Kp * error                                         # "P" in PID
-    integrator = integrator + 0.5 * Ki * T * (error + previous_error) # "I" in PID
-    measurement = (pos.x ** 2 + pos.y ** 2) ** 0.5
-    
-    # reset if over limit +/-, used when sensor is getting weird readings
-    if (integrator > limMaxInt) :
-        integrator = limMaxInt
-    elif (integrator < limMinInt) :
-        integrator = limMinInt
-        
-    differentiator = -(2.0 * Kd * (measurement - prevMeasurement) + (2.0 * tau - T) * differentiator) / (2.0 * tau + T) # "D" in PID
-    
-    
-    # update variables
-    T = rospy.get_time() # 
-    prevMeasurement = measurement
-    previous_error = error
-    
-    # update ends 
-    
-    out = proportional + integrator + differentiator
-    
-    # this calculation stuff need to be done in a loop every time it moves // not sure where to put it as a loop yet.
-    # send "out"(which is PID) to the move_base stack. // haven't figured out how to do it yet 
-    
-    # edit ends
-
     nav_as = actionlib.SimpleActionClient('/move_base', MoveBaseAction)
     mb_goal = MoveBaseGoal()
     mb_goal.target_pose.header.frame_id = 'odom'
-    mb_goal.target_pose.pose.position.x = GOAL_POSITION[0]
-    mb_goal.target_pose.pose.position.y = GOAL_POSITION[1]
+    mb_goal.target_pose.pose.position.x = 0
+    mb_goal.target_pose.pose.position.y = 10
     mb_goal.target_pose.pose.position.z = 0
     mb_goal.target_pose.pose.orientation = Quaternion(0, 0, 0, 1)
 
     nav_as.wait_for_server()
     nav_as.send_goal(mb_goal)
+    # what i know so far
+    # jackal only move forward and backward towards where the x-axis is pointing at
+    # jackal only turns by rotating around z-axis for angular, aka pose.pose.angular.z
 
+    # starts
+    cmd_vel = rospy.Publisher('cmd_vel', Twist, queue_size=5)
+    position = Point()  # this is the type msg similiar to std_msgs.msg for ros with x,y,z
+    move_cmd = Twist()  # contains two list, 1st list = linear, 2nd list = angular
+    # position contains x,y,z, which is a small list
+    # if you wanna send coord to the jackal
+    # use :
+    # cmd_vel.publish(move_cmd) for linear coord
+    # cmd_vel.publish(Twist()) for linear + angular info to jackal
+    goal_distance = sqrt(pow(0 - position.x, 2) + pow(10 - position.y, 2))
 
+    last_rotation = 0
+    previous_distance = 0
+    distance = goal_distance
+    total_distance = 0
+    previous_angle = 0
+    total_angle = 0
 
+    # distance is the error for length, x,y
+
+    r = rospy.Rate(10)
+    kp_distance = 1
+    ki_distance = 0.01
+    kd_distance = 0.5
+
+    kp_angle = 1
+    ki_angle = 0.03
+    kd_angle = 0.05
+    tf_listener = tf.TransformListener()
+
+    # how do you get angular.z
+
+    while distance > 0.05:
+        rotation = 0
+        position = pos
+        x_start = pos.x
+        y_start = pos.y
+        # path_angle = error
+
+        # FIXME : i have to find rotation from twist.angular.z
+        path_angle = atan2(10 - y_start, 0 - x_start)
+
+        if path_angle < -pi/4 or path_angle > pi/4:
+            if 10 < 0 and y_start < 10:
+                path_angle = -2*pi + path_angle
+            elif 10 >= 0 and y_start > 10:
+                path_angle = 2*pi + path_angle
+        if last_rotation > pi-0.1 and rotation <= 0:
+            rotation = 2*pi + rotation
+        elif last_rotation < -pi+0.1 and rotation > 0:
+            rotation = -2*pi + rotation
+
+        diff_angle = path_angle - previous_angle
+        diff_distance = distance - previous_distance
+
+        distance = sqrt(pow((0 - x_start), 2) + pow((10 - y_start), 2))
+
+        # PID
+        control_signal_distance = kp_distance*distance + \
+            ki_distance*total_distance + kd_distance*diff_distance
+        control_signal_angle = kp_angle*path_angle + \
+            ki_angle*total_angle + kd_distance*diff_angle
+        move_cmd.angular.z = (control_signal_angle) - rotation
+        move_cmd.linear.x = min(control_signal_distance, 0.1)
+
+        if move_cmd.angular.z > 0:
+            move_cmd.angular.z = min(move_cmd.angular.z, 1.5)
+        else:
+            move_cmd.angular.z = max(move_cmd.angular.z, -1.5)
+        pos = gazebo_sim.get_model_state().pose.position
+        curr_coor = (pos.x, pos.y)
+        curr_time = rospy.get_time()
+        start_time = curr_time
+        start_time_cpu = time.time()
+        print("Time: %.2f (s), x: %.2f (m), y: %.2f (m)" %
+              (curr_time - start_time, *curr_coor), end="\r")
+
+        last_rotation = rotation
+        cmd_vel.publish(move_cmd)
+        r.sleep()
+        previous_distance = distance
+        total_distance = total_distance + distance
 
     ##########################################################################################
-    ## 2. Start navigation
+    # 2. Start navigation
     ##########################################################################################
-    
+
     curr_time = rospy.get_time()
     pos = gazebo_sim.get_model_state().pose.position
     curr_coor = (pos.x, pos.y)
 
-    
     # check whether the robot started to move
     while compute_distance(init_coor, curr_coor) < 0.1:
         curr_time = rospy.get_time()
         pos = gazebo_sim.get_model_state().pose.position
         curr_coor = (pos.x, pos.y)
         time.sleep(0.01)
-    
+
     # start navigation, check position, time and collision
     start_time = curr_time
     start_time_cpu = time.time()
     collided = False
-    
+
     while compute_distance(goal_coor, curr_coor) > 1 and not collided and curr_time - start_time < 100:
         curr_time = rospy.get_time()
         pos = gazebo_sim.get_model_state().pose.position
         curr_coor = (pos.x, pos.y)
-        print("Time: %.2f (s), x: %.2f (m), y: %.2f (m)" %(curr_time - start_time, *curr_coor), end="\r")
+        print("Time: %.2f (s), x: %.2f (m), y: %.2f (m)" %
+              (curr_time - start_time, *curr_coor), end="\r")
+        # print("Time: %.2f (s), x: %.2f (m), y: %.2f (m), Stats -> x: %.2f (s), y: %.2f (m)" %(curr_time - start_time, *curr_coor,GOAL_POSITION[0], GOAL_POSITION[1]), end="\r")
         collided = gazebo_sim.get_hard_collision()
         while rospy.get_time() - curr_time < 0.1:
             time.sleep(0.01)
 
+    ##########################################################################################
+    # 3. Report metrics and generate log
+    ##########################################################################################
 
-    
-    
-    ##########################################################################################
-    ## 3. Report metrics and generate log
-    ##########################################################################################
-    
     print(">>>>>>>>>>>>>>>>>> Test finished! <<<<<<<<<<<<<<<<<<")
     success = False
     if collided:
@@ -220,26 +245,32 @@ if __name__ == "__main__":
     else:
         status = "succeeded"
         success = True
-    print("Navigation %s with time %.4f (s)" %(status, curr_time - start_time))
-    
-    path_file_name = join(base_path, "worlds/BARN/path_files", "path_%d.npy" %args.world_idx)
+    print("Navigation %s with time %.4f (s)" %
+          (status, curr_time - start_time))
+
+    path_file_name = join(base_path, "worlds/BARN/path_files",
+                          "path_%d.npy" % args.world_idx)
     path_array = np.load(path_file_name)
     path_array = [path_coord_to_gazebo_coord(*p) for p in path_array]
-    path_array = np.insert(path_array, 0, (INIT_POSITION[0], INIT_POSITION[1]), axis=0)
-    path_array = np.insert(path_array, len(path_array), (INIT_POSITION[0] + GOAL_POSITION[0], INIT_POSITION[1] + GOAL_POSITION[1]), axis=0)
+    path_array = np.insert(
+        path_array, 0, (INIT_POSITION[0], INIT_POSITION[1]), axis=0)
+    path_array = np.insert(path_array, len(
+        path_array), (INIT_POSITION[0] + GOAL_POSITION[0], INIT_POSITION[1] + GOAL_POSITION[1]), axis=0)
     path_length = 0
     for p1, p2 in zip(path_array[:-1], path_array[1:]):
         path_length += compute_distance(p1, p2)
-    
+
     # Navigation metric: 1_success *  optimal_time / clip(actual_time, 4 * optimal_time, 8 * optimal_time)
     optimal_time = path_length / 2
     actual_time = curr_time - start_time
-    nav_metric = int(success) * optimal_time / np.clip(actual_time, 4 * optimal_time, 8 * optimal_time)
-    print("Navigation metric: %.4f" %(nav_metric))
-    
+    nav_metric = int(success) * optimal_time / \
+        np.clip(actual_time, 4 * optimal_time, 8 * optimal_time)
+    print("Navigation metric: %.4f" % (nav_metric))
+
     with open(args.out, "a") as f:
-        f.write("%d %d %d %d %.4f %.4f\n" %(args.world_idx, success, collided, (curr_time - start_time)>=100, curr_time - start_time, nav_metric))
-    
+        f.write("%d %d %d %d %.4f %.4f\n" % (args.world_idx, success, collided,
+                (curr_time - start_time) >= 100, curr_time - start_time, nav_metric))
+
     gazebo_process.terminate()
     gazebo_process.wait()
     nav_stack_process.terminate()
