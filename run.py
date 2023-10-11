@@ -127,7 +127,7 @@ if __name__ == "__main__":
     # use :
     # cmd_vel.publish(move_cmd) for linear coord
     # cmd_vel.publish(Twist()) for linear + angular info to jackal
-    goal_distance = sqrt(pow(0 - position.x, 2) + pow(10 - position.y, 2))
+    goal_distance = sqrt(pow(0 - pos.x, 2) + pow(10 - pos.y, 2))
 
     last_rotation = 0
     previous_distance = 0
